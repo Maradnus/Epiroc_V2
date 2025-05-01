@@ -1,25 +1,25 @@
 #ifndef ERROR_HANDLER_H
 #define ERROR_HANDLER_H
 
-#include <avr/io.h>
-#include <stdint.h>
+#include "common.h"
+#include <stdbool.h>
 
-// Error codes
 typedef enum {
-    ERR_NONE = 0,
-    ERR_CAN_INIT_FAIL,
-    ERR_CAN_COMM_FAIL,
-    ERR_OVERCURRENT,
-    ERR_TOO_MANY_CHANNELS,
-    ERR_EEPROM_FAIL,
-    ERR_SYSTEM_FAIL
-} Error_Code_t;
+    ERROR_NONE = 0,
+    ERROR_CAN_COMM,
+    ERROR_OVER_CURRENT,
+    ERROR_CHANNEL_CONFLICT,
+    ERROR_EEPROM,
+    ERROR_COUNT
+} Error_t;
 
-// Function prototypes
-void Err_Init(void);
-Error_Code_t Err_DetectSysError(void);
-void Err_LogError(Error_Code_t error, uint8_t module);
-void Err_RecoverFromError(Error_Code_t error);
-void Err_TriggerErrProtocol(Error_Code_t error);
+void Err_init(void);
+void Err_detect_sys_error(void);
+void Err_log_error(Error_t error, const char* module);
+void Err_recover_from_error(Error_t error);
+void Err_trigger_err_protocol(Error_t error);
+float Err_read_current(void);  
+float Err_read_current_filtered(void);
+void Err_set_output_active(bool active);  // New function to indicate if outputs are active
 
-#endif /* ERROR_HANDLER_H */
+#endif // ERROR_HANDLER_H

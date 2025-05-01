@@ -1,15 +1,12 @@
 #ifndef SYSTEM_INIT_H
 #define SYSTEM_INIT_H
 
-#include <avr/io.h>
-#include <stdint.h>
+#include "common.h"
 
-// Function prototypes
-void Sys_Init(void);
-void Sys_InitPower(void);
-void Sys_InitCAN(void);
-void Sys_InitMode(void);
-void Sys_InitSolenoid(void);
-void Sys_InitMonitor(void);
+void Sys_init_power(void);
+void Sys_init_CAN(void);
+void Sys_init_mode(void);
+void Sys_init_solenoid(void);
+void Sys_init_monitor(void);
 
-#endif /* SYSTEM_INIT_H */
+#endif // SYSTEM_INIT_H

@@ -1,173 +1,174 @@
-/**
- * @file error_handler.c
- * @brief Error handler implementation
- * @author Claude
- * @date April 26, 2025
- */
-
 #include "error_handler.h"
-#include "LED_ctrl.h"
-#include "system_timer.h"
-#include <avr/io.h>
 #include <avr/eeprom.h>
+#include <avr/io.h>
+#include <util/delay.h>
+#include "led.h"
+#include "debug.h"
+#define CURRENT_SAMPLES 16  // Number of samples for averaging
 
-// Define module IDs for error logging
-#define MODULE_SYSTEM   0
-#define MODULE_CAN      1
-#define MODULE_LED      2
-#define MODULE_MODE     3
-#define MODULE_SOLENOID 4
-#define MODULE_EEPROM   5
-#define MODULE_SENSOR   6
+static Error_t current_error = ERROR_NONE;
+static bool output_active = false;  // Flag to indicate if any output is active
 
-// Maximum number of errors to log
-#define MAX_ERROR_LOG   10
-
-// Error log structure
-typedef struct {
-    Error_Code_t error_code;
-    uint8_t module;
-    uint32_t timestamp;
-} Error_Log_t;
-
-// Error log array
-static Error_Log_t error_log[MAX_ERROR_LOG];
-static uint8_t error_log_index = 0;
-static uint8_t error_count = 0;
-
-// Current system error status
-static Error_Code_t current_error = ERR_NONE;
-
-// Initialize error handler
-void Err_Init(void)
-{
-    // Clear error log
-    for (uint8_t i = 0; i < MAX_ERROR_LOG; i++) {
-        error_log[i].error_code = ERR_NONE;
-        error_log[i].module = 0;
-        error_log[i].timestamp = 0;
-    }
+// Initialize ADC for current sensing on PF1 (ADC1)
+static void ADC_init(void) {
+    // Set PF1 as input (ADC1)
+    DDRF &= ~(1 << PF1);
     
-    error_log_index = 0;
-    error_count = 0;
-    current_error = ERR_NONE;
+    // AVCC with external capacitor at AREF pin
+    ADMUX = (1 << REFS0);
+    
+    // Enable ADC and set prescaler to 128 (16MHz/128 = 125kHz)
+    ADCSRA = (1 << ADEN) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);
+    
+    DEBUG_PRINTLN("ADC initialized for current sensing on PF1 (ADC1)");
 }
 
-// Detect system errors
-Error_Code_t Err_DetectSysError(void)
-{
-    // Check current sensor for overcurrent
-    if ((ADMUX & 0x0F) == 0x01 && (ADCSRA & (1 << ADIF))) {
-        // Read ADC value
-        uint16_t adc_value = ADC;
+// Read ADC value from current sensor on PF1 (ADC1)
+static uint16_t ADC_read(void) {
+    // Select ADC1 channel (PF1)
+    ADMUX = (ADMUX & 0xF0) | (CURRENT_SENSOR_ADC_CHANNEL & 0x0F);
+    
+    // Start single conversion
+    ADCSRA |= (1 << ADSC);
+    
+    // Wait for conversion to complete
+    while (ADCSRA & (1 << ADSC));
+    
+    // Return ADC value
+    return ADC;
+}
+
+// Read current in Amps
+float Err_read_current(void) {
+    uint16_t adc_value = ADC_read();
+    
+    // Convert ADC value to voltage
+    float voltage = (adc_value * ADC_REF_VOLTAGE) / ADC_RESOLUTION;
+    
+    // Convert voltage to current (A)
+    float current = (voltage - (ADC_REF_VOLTAGE/2)) / CURRENT_SENSOR_SENSITIVITY;
+    
+    DEBUG_PRINT("Current Sensor (PF1) - Raw: ");
+    DEBUG_PRINT_NUM(adc_value);
+    DEBUG_PRINT(" (");
+    DEBUG_PRINT_NUM((int)(voltage * 1000)); // mV
+    DEBUG_PRINT("mV) Current: ");
+    DEBUG_PRINT_NUM((int)(current * 1000)); // mA
+    DEBUG_PRINTLN(" mA");
+    
+    return current;
+}
+
+float Err_read_current_filtered(void) {
+    uint32_t adc_sum = 0;
+    
+    // Take multiple samples for averaging
+    for (uint8_t i = 0; i < CURRENT_SAMPLES; i++) {
+        adc_sum += ADC_read();
+        _delay_us(100);  // Small delay between samples
+    }
+    
+    uint16_t adc_avg = adc_sum / CURRENT_SAMPLES;
+    
+    // Convert to current
+    float voltage = (adc_avg * ADC_REF_VOLTAGE) / ADC_RESOLUTION;
+    float current = (voltage - (ADC_REF_VOLTAGE/2)) / CURRENT_SENSOR_SENSITIVITY;
+    
+    DEBUG_PRINT("Filtered Current (PF1) - Avg Raw: ");
+    DEBUG_PRINT_NUM(adc_avg);
+    DEBUG_PRINT(" (");
+    DEBUG_PRINT_NUM((int)(voltage * 1000));
+    DEBUG_PRINT("mV) Current: ");
+    DEBUG_PRINT_NUM((int)(current * 1000));
+    DEBUG_PRINTLN(" mA");
+    
+    return current;
+}
+
+void Err_init(void) {
+    current_error = ERROR_NONE;
+    output_active = false;
+    ADC_init();  // Initialize ADC for current sensing
+    DEBUG_PRINTLN("Error handler initialized");
+}
+
+void Err_detect_sys_error(void) {
+    // Only check current if outputs are active
+    if (output_active) {
+        float current = Err_read_current_filtered();
         
-        // Check if current is too high (threshold example)
-        if (adc_value > 900) { // Adjust threshold based on actual system
-            return ERR_OVERCURRENT;
+        if (current > (MAX_TOTAL_CURRENT / 1000.0)) {
+            Err_trigger_err_protocol(ERROR_OVER_CURRENT);
         }
     }
     
-    // Check CAN communication status
-    if ((CANGSTA & (1 << TXBSY)) && (Timer_GetMillis() % 1000 == 0)) {
-        // If TX has been busy for a long time, consider it a failure
-        return ERR_CAN_COMM_FAIL;
-    }
-    
-    return ERR_NONE;
+    // Add other error detection logic here
 }
 
-// Log an error
-void Err_LogError(Error_Code_t error, uint8_t module)
-{
-    if (error != ERR_NONE) {
-        // Log error details
-        error_log[error_log_index].error_code = error;
-        error_log[error_log_index].module = module;
-        error_log[error_log_index].timestamp = Timer_GetMillis();
-        
-        // Update index
-        error_log_index = (error_log_index + 1) % MAX_ERROR_LOG;
-        
-        // Update error count
-        if (error_count < MAX_ERROR_LOG) {
-            error_count++;
+void Err_log_error(Error_t error, const char* module) {
+    if (error >= ERROR_COUNT) return;
+    
+    current_error = error;
+    
+    DEBUG_PRINT("Error in ");
+    DEBUG_PRINT(module);
+    DEBUG_PRINT(": ");
+    
+    switch (error) {
+        case ERROR_CAN_COMM:
+            DEBUG_PRINTLN("CAN communication error");
+            LED_set(LED_CAN, LED_BLINK, 200);
+            break;
+        case ERROR_OVER_CURRENT: {
+            float current = Err_read_current();
+            DEBUG_PRINT("OVER CURRENT: ");
+            DEBUG_PRINT_NUM((int)(current * 1000));
+            DEBUG_PRINTLN(" mA");
+            LED_set(LED_POWER, LED_BLINK, 200);
+            break;
         }
-        
-        // Store current error
-        current_error = error;
+        case ERROR_CHANNEL_CONFLICT:
+            DEBUG_PRINTLN("Channel conflict detected");
+            LED_set(LED_OUTPUT, LED_BLINK, 200);
+            break;
+        case ERROR_EEPROM:
+            DEBUG_PRINTLN("EEPROM error");
+            break;
+        default:
+            DEBUG_PRINTLN("Unknown error");
+            break;
     }
 }
 
-// Try to recover from an error
-void Err_RecoverFromError(Error_Code_t error)
-{
+void Err_recover_from_error(Error_t error) {
     switch (error) {
-        case ERR_CAN_INIT_FAIL:
-        case ERR_CAN_COMM_FAIL:
-            // Reset CAN module
-            CANGCON |= (1 << SWRES);
-            Timer_Delay(10);
-            // Re-initialize
-            CANGCON = (1 << ENASTB);
+        case ERROR_OVER_CURRENT:
+            // Turn off all outputs
+            DEBUG_PRINTLN("Recovering from over-current - disabling outputs");
+            output_active = false;
+            // You would call solenoid module to turn everything off here
             break;
-            
-        case ERR_OVERCURRENT:
-            // Turn off all outputs and wait
-            PORTA &= 0x00;  // Clear all port A outputs
-            PORTC &= 0xF0;  // Clear lower 4 bits of port C
-            Timer_Delay(1000);  // Wait 1 second
-            break;
-            
-        case ERR_EEPROM_FAIL:
-            // No specific recovery, just log
-            break;
-            
-        case ERR_SYSTEM_FAIL:
-            // System reset - in a real implementation, consider watchdog
-            Timer_Delay(100);
-            // In real code: use watchdog to reset
-            break;
-            
         default:
+            DEBUG_PRINT("Recovering from error: ");
+            DEBUG_PRINT_NUM(error);
+            DEBUG_PRINTLN("");
             break;
     }
     
-    // Clear current error if recovery was attempted
-    current_error = ERR_NONE;
+    current_error = ERROR_NONE;
 }
 
-// Trigger appropriate error protocol
-void Err_TriggerErrProtocol(Error_Code_t error)
-{
-    switch (error) {
-        case ERR_CAN_INIT_FAIL:
-        case ERR_CAN_COMM_FAIL:
-            // Set LED2 to red blinking to indicate CAN error
-            LED_Set(LED2_RED, BLINK, 500);
-            break;
-            
-        case ERR_OVERCURRENT:
-            // Set LED3 to red blinking to indicate output error
-            LED_Set(LED3_RED, BLINK, 200);
-            break;
-            
-        case ERR_EEPROM_FAIL:
-            // Set LED4 to red to indicate configuration error
-            LED_Set(LED4_RED, ON, 0);
-            break;
-            
-        case ERR_SYSTEM_FAIL:
-            // Set all LEDs to red
-            LED_Set(LED1_RED, ON, 0);
-            LED_Set(LED2_RED, ON, 0);
-            LED_Set(LED3_RED, ON, 0);
-            LED_Set(LED4_RED, ON, 0);
-            break;
-            
-        default:
-            break;
+void Err_trigger_err_protocol(Error_t error) {
+    Err_log_error(error, "SYSTEM");
+    Err_recover_from_error(error);
+}
+
+// Set the output active flag
+void Err_set_output_active(bool active) {
+    output_active = active;
+    if (active) {
+        DEBUG_PRINTLN("Outputs active, enabling current monitoring");
+    } else {
+        DEBUG_PRINTLN("All outputs inactive, disabling current monitoring");
     }
-    
-    // Try to recover from error
-    Err_RecoverFromError(error);
 }

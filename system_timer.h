@@ -1,12 +1,10 @@
 #ifndef SYSTEM_TIMER_H
 #define SYSTEM_TIMER_H
 
-#include <avr/io.h>
 #include <stdint.h>
+#include "config.h"
+void system_timer_init(void);
+uint32_t system_timer_get_ms(void);
+void system_timer_delay_ms(uint32_t ms);
 
-// Function prototypes
-void Timer_Init(void);
-uint32_t Timer_GetMillis(void);
-void Timer_Delay(uint16_t ms);
-
-#endif /* SYSTEM_TIMER_H */
+#endif // SYSTEM_TIMER_H
